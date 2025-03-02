@@ -1,16 +1,13 @@
-use anyhow::{anyhow, Error, Result};
-use bincode::serialize;
+use crate::chat::MessageType;
+use anyhow::{anyhow, Result};
 use regex::Regex;
 use std::collections::HashMap;
-use std::fs::create_dir;
 use std::io::Write;
 use std::net::TcpListener;
 use std::net::{SocketAddr, TcpStream};
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
-
-use crate::chat::MessageType;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn validate_port(port: &String) -> Result<String, anyhow::Error> {
     let regex = Regex::new(r"[0-9]")?;
@@ -38,10 +35,6 @@ pub fn validate_host(host: &String) -> Result<String, anyhow::Error> {
     }
 }
 
-fn dir_exists(path: &str) -> bool {
-    Path::new(path).exists()
-}
-
 pub fn listen_and_accept(address: &String) -> Result<()> {
     let listener = TcpListener::bind(address)?;
     let clients = Arc::new(Mutex::new(HashMap::new()));
@@ -63,7 +56,6 @@ pub fn listen_and_accept(address: &String) -> Result<()> {
             clients_map.insert(addr, stream.try_clone()?);
         }
 
-        // Spawn a thread to handle this client
         thread::spawn(move || {
             if let Err(e) = handle_client(stream, addr, clients_clone) {
                 println!("Client error: {}", e);
@@ -75,72 +67,105 @@ pub fn listen_and_accept(address: &String) -> Result<()> {
 }
 
 fn handle_client(
-    mut stream: TcpStream,
+    stream: TcpStream,
     addr: SocketAddr,
     clients: Arc<Mutex<HashMap<SocketAddr, TcpStream>>>,
 ) -> Result<()> {
     loop {
-        match MessageType::receive_message(stream.try_clone().unwrap()) {
+        match MessageType::receive_message(&stream.try_clone().unwrap()) {
             Ok(message) => match message {
                 MessageType::Text(text_content) => {
                     println!("{text_content}");
-                    if let Some(stream) = clients.get(&addr) {
-                        println!("Connected to: {}", stream.peer_addr().unwrap());
-                        let text_bin = serialize(&text_content)?;
-                        broadcast(&text_bin, &clients, &addr)?
+                    let clients_map = clients.lock().unwrap();
+                    if let Some(client_stream) = clients_map.get(&addr) {
+                        println!("Connected to: {}", client_stream.peer_addr().unwrap());
+                        let msg = MessageType::Text(text_content);
+                        drop(clients_map);
+                        broadcast(&clients, &addr, msg)?
                     }
                 }
                 MessageType::Image(image_data) => {
-                    if let Some(stream) = clients.get(&addr) {
-                        println!("Connected to: {}", stream.peer_addr().unwrap());
+                    let clients_map = clients.lock().unwrap();
+                    if let Some(client_stream) = clients_map.get(&addr) {
+                        println!("Connected to: {}", client_stream.peer_addr().unwrap());
                         println!("Receiving image...");
-                        if !dir_exists("./images") {
-                            create_dir("./images")?;
-                        }
-                        broadcast(&image_data, &clients, &addr)?
+                        let file_name = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        let path = format!("./images/{file_name}.png");
+                        drop(clients_map);
+                        MessageType::save_file_to_disk(path, &image_data)?;
+                        let msg = MessageType::Image(image_data);
+                        broadcast(&clients, &addr, msg)?
                     }
                 }
                 MessageType::File { name, content } => {
-                    if let Some(stream) = clients.get(&addr) {
-                        println!("Connected to: {}", stream.peer_addr().unwrap());
+                    let clients_map = clients.lock().unwrap();
+                    if let Some(client_stream) = clients_map.get(&addr) {
+                        println!("Connected to: {}", client_stream.peer_addr().unwrap());
                         println!("Received file: {}", name);
-                        if dir_exists("./files") {
-                            create_dir("./files")?;
-                        }
-                        broadcast(&content, &clients, &addr)?
+                        let path = format!("./files/{name}");
+                        drop(clients_map);
+                        MessageType::save_file_to_disk(path, &content)?;
+                        let msg = MessageType::File { name, content };
+                        broadcast(&clients, &addr, msg)?
                     }
+                }
+                MessageType::Empty => {
+                    eprintln!("Yea we are not sending empty messages...");
                 }
             },
             Err(e) => {
                 println!("Error receiving message: {}", e);
-                // Handle error
             }
         }
     }
-
-    Ok(())
 }
 
 fn broadcast(
-    message: &Vec<u8>,
     clients: &Arc<Mutex<HashMap<SocketAddr, TcpStream>>>,
     sender_addr: &SocketAddr,
+    msg: MessageType,
 ) -> Result<()> {
     let mut to_remove = Vec::new();
     let mut clients_map = clients.lock().unwrap();
 
     for (&addr, stream) in clients_map.iter_mut() {
-        match stream.write_all(message) {
-            Ok(_) => match stream.flush() {
-                Ok(_) => {}
-                Err(e) => {
-                    println!("Error flushing stream to {}: {}", addr, e);
-                    to_remove.push(addr);
+        if addr == *sender_addr {
+            continue;
+        }
+
+        match bincode::serialize(&msg) {
+            Ok(serialized) => {
+                let len = serialized.len() as u32;
+                let len_bytes = len.to_be_bytes();
+
+                match stream.write_all(&len_bytes) {
+                    Ok(_) => match stream.write_all(&serialized) {
+                        Ok(_) => match stream.flush() {
+                            Ok(_) => {
+                                println!("Successfully sent message to client {}", addr);
+                            }
+                            Err(e) => {
+                                println!("Error flushing stream to {}: {}", addr, e);
+                                to_remove.push(addr);
+                            }
+                        },
+                        Err(e) => {
+                            println!("Error writing message to client {}: {}", addr, e);
+                            to_remove.push(addr);
+                        }
+                    },
+                    Err(e) => {
+                        println!("Error writing length bytes to client {}: {}", addr, e);
+                        to_remove.push(addr);
+                    }
                 }
-            },
+            }
             Err(e) => {
-                println!("Error writing to client {}: {}", addr, e);
-                to_remove.push(addr);
+                println!("Error serializing message for client {}: {}", addr, e);
+                continue;
             }
         }
     }

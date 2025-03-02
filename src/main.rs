@@ -1,6 +1,5 @@
-use std::{net::TcpStream, thread};
-
 use anyhow::{Context, Result};
+use std::{net::TcpStream, thread};
 mod chat;
 mod server;
 use chat::MessageType;
@@ -12,60 +11,109 @@ fn main() -> Result<()> {
 
     println!("Please specify port (default = 11111):");
     std::io::stdin().read_line(&mut port)?;
-    port = port.trim().to_string(); // Remove newline
+    port = port.trim().to_string();
 
     println!("Please specify host (default = 127.0.0.1):");
     std::io::stdin().read_line(&mut host)?;
-    host = host.trim().to_string(); // Remove newline
+    host = host.trim().to_string();
 
     let port = validate_port(&port)?;
     let host = validate_host(&host)?;
-
     let address = format!("{}:{}", host, port);
 
     println!("Run as server or client?");
     let mut mode = String::new();
     std::io::stdin().read_line(&mut mode)?;
 
-    let chat_thread = thread::Builder::new().name(String::from("chat-thread"));
-
     if mode.trim().to_lowercase() == "server" {
-        println!("Init server...");
         listen_and_accept(&address).context("Failed to run server")?;
+        println!("Server initialized!");
     } else {
         println!("Client mode: Type messages to send");
-        let client_thread = chat_thread.spawn(move || {
-            let mut stream = match TcpStream::connect(&address) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("Failed to connect: {}", e);
-                    return;
-                }
-            };
 
-            loop {
+        let stream = match TcpStream::connect(&address) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to connect: {}", e);
+                return Err(e.into());
+            }
+        };
+
+        let receiver_stream = stream.try_clone().context("Failed to clone stream")?;
+        let receiver_thread = thread::Builder::new()
+            .name(String::from("receiver-thread"))
+            .spawn(move || {
+                println!("Listening for incoming messages...");
+                loop {
+                    match MessageType::receive_message(&receiver_stream) {
+                        Ok(message) => match message {
+                            MessageType::Text(text) => {
+                                println!("\nReceived: {}", text);
+                                print!("> ");
+                                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                            }
+                            MessageType::Image(_) => {
+                                println!("\nReceived an image");
+                                print!("> ");
+                                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                            }
+                            MessageType::File { name, .. } => {
+                                println!("\nReceived file: {}", name);
+                                print!("> ");
+                                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                            }
+                            MessageType::Empty => {
+                                eprintln!("This was not supposed to happen...")
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("\nError receiving message: {}", e);
+                            if e.to_string().contains("end of file") {
+                                eprintln!("Server connection closed. Exiting...");
+                                break;
+                            }
+                            // Continue trying for other errors
+                        }
+                    }
+                }
+            })?;
+
+        let mut sender_stream = stream;
+        let sender_thread = thread::Builder::new()
+            .name(String::from("sender-thread"))
+            .spawn(move || loop {
                 let mut buf = String::new();
                 match std::io::stdin().read_line(&mut buf) {
                     Ok(_) => (),
-                    Err(e) => eprintln!("Invalid input: {e}"),
+                    Err(e) => {
+                        eprintln!("Invalid input: {e}");
+                        continue;
+                    }
                 }
 
-                match MessageType::determine_outgoing_message(&buf.trim().to_string()) {
+                let trimmed = buf.trim().to_string();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                match MessageType::determine_outgoing_message(&trimmed) {
                     Ok(new_message) => {
                         if let Err(e) = new_message
-                            .send_message(&mut stream)
+                            .send_message(&mut sender_stream)
                             .context("Failed to send message to the server")
                         {
                             eprintln!("Send error: {}", e);
+                            break;
                         }
                     }
                     Err(e) => {
                         eprintln!("Something went wrong: {e}");
                     }
                 }
-            }
-        })?;
-        client_thread.join().unwrap();
+            })?;
+        sender_thread.join().unwrap();
+        receiver_thread.join().unwrap();
     }
+
     Ok(())
 }

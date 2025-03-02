@@ -1,6 +1,7 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use bincode;
 use serde::{Deserialize, Serialize};
+use std::fs::create_dir;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -12,6 +13,7 @@ pub enum MessageType {
     Text(String),
     Image(Vec<u8>),
     File { name: String, content: Vec<u8> },
+    Empty
 }
 
 impl MessageType {
@@ -61,11 +63,11 @@ impl MessageType {
         Ok(serialized)
     }
 
-    fn deserialize_from_bytes(input: &Vec<u8>) -> Result<Self> {
+    fn deserialize_from_bytes(input: &Vec<u8>) -> Result<Self, anyhow::Error> {
         bincode::deserialize(input).map_err(|e| anyhow!("Deserialization error: {}", e))
     }
 
-    pub fn send_message(self, stream: &mut TcpStream ) -> Result<()> {
+    pub fn send_message(self, stream: &mut TcpStream) -> Result<()> {
         let serialized: Vec<u8> = self.serialize()?;
         let serialized_u8: &[u8] = &serialized;
 
@@ -77,14 +79,12 @@ impl MessageType {
         Ok(())
     }
 
-    pub fn receive_message(mut stream: TcpStream) -> Result<Self> {
+    pub fn receive_message(mut stream: &TcpStream) -> Result<Self> {
         let mut len_bytes = [0u8; 4];
         stream.read_exact(&mut len_bytes)?;
         let len = u32::from_be_bytes(len_bytes) as usize;
-
         let mut buffer = vec![0u8; len];
         stream.read_exact(&mut buffer)?;
-
         Self::deserialize_from_bytes(&buffer)
     }
 
@@ -94,5 +94,17 @@ impl MessageType {
 
         f.read_to_end(&mut buffer)?;
         Ok(buffer)
+    }
+
+    pub fn save_file_to_disk(path: String, buf: &Vec<u8>) -> Result<(), Error> {
+        let parent_dir = Path::new(&path)
+            .parent()
+            .ok_or(anyhow!("Something went wrong..."))?;
+        if !parent_dir.exists() {
+            create_dir(parent_dir)?;
+        }
+        let mut file = File::create(path)?;
+        file.write_all(&buf)?;
+        Ok(())
     }
 }
