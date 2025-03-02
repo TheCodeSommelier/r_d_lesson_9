@@ -72,7 +72,6 @@ fn main() -> Result<()> {
                                 eprintln!("Server connection closed. Exiting...");
                                 break;
                             }
-                            // Continue trying for other errors
                         }
                     }
                 }
