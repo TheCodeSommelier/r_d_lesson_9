@@ -7,6 +7,10 @@ use std::thread;
 
 use chat_lib::MessageType;
 
+/*
+ * The client function was moved from the main function "if else" statement here
+ * It uses TCP streams to connect to the sever and thanks to that is able to receive incoming messages.
+*/
 pub fn client(address: &str) -> Result<()> {
     let stream = TcpStream::connect(&address).context("Failed to connect".red())?;
 

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
-use std::io::stdin;
 use yansi::Paint;
+
+use std::io::stdin;
 
 use client::client;
 use server::{listen_and_accept, validate_host, validate_port};
@@ -27,7 +28,7 @@ fn main() -> Result<()> {
     let host = validate_host(&host)?;
     let address = format!("{}:{}", host, port);
 
-    println!("Run as server or client?");
+    println!("Run as server or client (default = client)?");
     let mut mode = String::new();
     stdin().read_line(&mut mode)?;
 

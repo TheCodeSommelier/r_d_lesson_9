@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use yansi::Paint;
 
@@ -11,29 +11,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chat_lib::MessageType;
 
+/*
+ * Exactly the same number that we can fit into u16 is the number of ports
+ * Hence we try to fit the port num into u16 and if doesn't... Error...
+ */
 pub fn validate_port(port: &str) -> Result<String> {
-    /*
     if port.is_empty() {
-        return "11111".to_string();
+        return Ok("11111".to_string());
     }
 
     port.parse::<u16>()
-        .context("The port is invalid")?;
+        .with_context(|| format!("{}", "The port is invalid".red()))?;
 
     Ok(port.to_string())
-    */
-
-    let regex = Regex::new(r"[0-9]")?;
-
-    if regex.is_match(port) {
-        Ok(port.to_string())
-    } else if port.is_empty() {
-        Ok("11111".to_string())
-    } else {
-        Err(anyhow!("The port is invalid...".red()))
-    }
 }
 
+/*
+ * Here we validate hosts IP using regex
+ */
 pub fn validate_host(host: &str) -> Result<String> {
     let regex = Regex::new(
         r"^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$",
@@ -41,13 +36,23 @@ pub fn validate_host(host: &str) -> Result<String> {
 
     if regex.is_match(host) {
         Ok(host.to_string())
-    } else if host == "" {
+    } else if host.is_empty() {
         Ok("127.0.0.1".to_string())
     } else {
         Err(anyhow!("The host is invalid...".red()))
     }
 }
 
+/*
+ * A tcp listener is connected
+ * A clients hashmap with Arc and mutex is established
+ *    Arc: Ensures that the hashmap is thread safe
+ *    Mutex: Ensures that only one thread at a time is allowed to work with the hashmap
+ * We then listen for incming streams
+ * when a new client is connected we clone the clients hashmap
+ * we lock it in place (no other thread has access to it now)
+ * we spawn a thread and run handle_client func in it
+ */
 pub fn listen_and_accept(address: &String) -> Result<()> {
     let listener = TcpListener::bind(address)?;
     let clients = Arc::new(Mutex::new(HashMap::new()));
@@ -82,6 +87,25 @@ pub fn listen_and_accept(address: &String) -> Result<()> {
     Ok(())
 }
 
+/*
+ * handle_client is an infinite loop that handles receiving messages
+ *
+ * Message types
+ *
+ * 1. Text
+ *    - We just print it out
+ *
+ * 2. Image
+ *    - Create a timestamp
+ *    - get the path
+ *    - save to disk
+ *
+ * 3. File
+ *    - get the path
+ *    - save to disk
+ *
+ * to see save to disk func go to chat-lib under impl MessageType
+ */
 fn handle_client(
     stream: TcpStream,
     addr: SocketAddr,
@@ -91,6 +115,7 @@ fn handle_client(
         match MessageType::receive_message(&stream) {
             Ok(message) => {
                 match &message {
+                    // If message type is a simple text we just print out the text
                     MessageType::Text(text_content) => {
                         println!("{text_content}");
                     }
@@ -119,6 +144,11 @@ fn handle_client(
     }
 }
 
+/*
+ * We skip the interation on the sender address to not send the message to the sender
+ * and then we send the message using the impl MessageType send_mesage func
+ * and finally we remove any dead connections
+ */
 fn broadcast(
     clients: &Arc<Mutex<HashMap<SocketAddr, TcpStream>>>,
     sender_addr: &SocketAddr,

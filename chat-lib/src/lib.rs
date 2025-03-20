@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use bincode;
 use serde::{Deserialize, Serialize};
+use yansi::Paint;
+
 use std::fs::create_dir;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -9,7 +11,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
-use yansi::Paint;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum MessageType {
@@ -19,6 +20,10 @@ pub enum MessageType {
 }
 
 impl MessageType {
+    /*
+     * It uses the first part of the message to determine wheather it is a command to send a file or an image.
+     * Or if the user wants to quit or just plain send a text.
+     */
     pub fn determine_outgoing_message(msg: &String) -> Result<Self> {
         match msg.as_str() {
             ".quit" => {
@@ -70,6 +75,11 @@ impl MessageType {
         bincode::deserialize(input).map_err(|e| anyhow!("Deserialization error: {}", e.red()))
     }
 
+    /*
+     * this function takes in a stream serializes the MessageType into bytes
+     * gets the peer addrass from the hashmap and writes in the length then the content (image, file or text in bytes)
+     * and finally it flushes the stream, effectively sending it...
+     */
     pub fn send_message(&self, stream: &mut TcpStream) -> Result<()> {
         let serialized: Vec<u8> = self.serialize()?;
         let serialized_u8: &[u8] = &serialized;
@@ -94,6 +104,12 @@ impl MessageType {
         Ok(())
     }
 
+    /*
+     * To receive a message we first get the length of it in bytes
+     * it converts the bytes from big endian to u32 and casts it to usize
+     * we create the buffer with the specified length
+     * and finally deserialize the content
+     */
     pub fn receive_message(mut stream: &TcpStream) -> Result<Self> {
         let mut len_bytes = [0u8; 4];
         stream.read_exact(&mut len_bytes)?;
