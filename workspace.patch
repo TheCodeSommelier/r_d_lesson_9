@@ -1,0 +1,485 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 9d0d16a..ca0fa7e 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -26,6 +26,29 @@ dependencies = [
+  "serde",
+ ]
+ 
++[[package]]
++name = "chat-lib"
++version = "0.1.0"
++dependencies = [
++ "anyhow",
++ "bincode",
++ "regex",
++ "serde",
++ "serde_json",
++]
++
++[[package]]
++name = "client"
++version = "0.1.0"
++dependencies = [
++ "anyhow",
++ "bincode",
++ "chat-lib",
++ "regex",
++ "serde",
++ "serde_json",
++]
++
+ [[package]]
+ name = "itoa"
+ version = "1.0.14"
+@@ -37,10 +60,8 @@ name = "lesson_9"
+ version = "0.1.0"
+ dependencies = [
+  "anyhow",
+- "bincode",
+- "regex",
+- "serde",
+- "serde_json",
++ "client",
++ "server",
+ ]
+ 
+ [[package]]
+@@ -134,6 +155,18 @@ dependencies = [
+  "serde",
+ ]
+ 
++[[package]]
++name = "server"
++version = "0.1.0"
++dependencies = [
++ "anyhow",
++ "bincode",
++ "chat-lib",
++ "regex",
++ "serde",
++ "serde_json",
++]
++
+ [[package]]
+ name = "syn"
+ version = "2.0.98"
+diff --git a/Cargo.toml b/Cargo.toml
+index 8cce6d4..14dc785 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,3 +1,11 @@
++[workspace]
++resolver = "3"
++members = [
++   "server",
++   "client",
++   "chat-lib",
++]
++
+ [package]
+ name = "lesson_9"
+ version = "0.1.0"
+@@ -5,7 +13,5 @@ edition = "2021"
+ 
+ [dependencies]
+ anyhow = "1.0.96"
+-bincode = "1.3.3"
+-regex = "1.11.1"
+-serde = { version = "1.0.218", features = ["derive"] }
+-serde_json = "1.0.139"
++server = { path = "./server" }
++client = { path = "./client" }
+diff --git a/src/chat.rs b/src/chat.rs
+deleted file mode 100644
+index 3f99450..0000000
+--- a/src/chat.rs
++++ /dev/null
+@@ -1,129 +0,0 @@
+-use anyhow::{anyhow, Context, Result};
+-
+-use bincode;
+-use serde::{Deserialize, Serialize};
+-use std::fs::create_dir;
+-use std::fs::File;
+-use std::io::{Read, Write};
+-use std::net::TcpStream;
+-use std::path::Path;
+-use std::path::PathBuf;
+-use std::process::exit;
+-use std::str::FromStr;
+-
+-#[derive(Serialize, Deserialize, Debug)]
+-pub enum MessageType {
+-    Text(String),
+-    Image(Vec<u8>),
+-    File { name: String, content: Vec<u8> },
+-}
+-
+-impl MessageType {
+-    pub fn determine_outgoing_message(msg: &String) -> Result<Self> {
+-        match msg.as_str() {
+-            ".quit" => {
+-                println!("Good bye!");
+-                exit(0)
+-            }
+-            _ if msg.starts_with(".file") => {
+-                let path = Self::extract_path(&msg)?;
+-
+-                if let Some(file_name) = Self::extract_file_name(&path) {
+-                    let file_content = Self::serialize_file(&path)?;
+-
+-                    Ok(Self::File {
+-                        name: file_name.to_string(),
+-                        content: file_content,
+-                    })
+-                } else {
+-                    Err(anyhow!("File path is wrong..."))
+-                }
+-            }
+-            _ if msg.starts_with(".image") => {
+-                let path = Self::extract_path(&msg)?;
+-
+-                let image_bin = Self::serialize_file(&path)?;
+-                Ok(Self::Image(image_bin))
+-            }
+-            _ => {
+-                let text_message: String = msg.to_string();
+-                Ok(Self::Text(text_message))
+-            }
+-        }
+-    }
+-
+-    fn extract_file_name<P: AsRef<Path>>(path: &P) -> Option<&str> {
+-        Path::new(path.as_ref()).file_name()?.to_str()
+-    }
+-
+-    fn extract_path(command: &String) -> Result<PathBuf> {
+-        let command_parts: Vec<&str> = command.splitn(2, " ").collect();
+-        PathBuf::from_str(&command_parts[1]).context("invalid path")
+-    }
+-
+-    fn serialize(&self) -> Result<Vec<u8>> {
+-        let serialized = bincode::serialize(&self)?;
+-        Ok(serialized)
+-    }
+-
+-    fn deserialize_from_bytes(input: &Vec<u8>) -> Result<Self> {
+-        bincode::deserialize(input).map_err(|e| anyhow!("Deserialization error: {}", e))
+-    }
+-
+-    pub fn send_message(&self, stream: &mut TcpStream) -> Result<()> {
+-        let serialized: Vec<u8> = self.serialize()?;
+-        let serialized_u8: &[u8] = &serialized;
+-        let addr = stream
+-            .peer_addr()
+-            .map(|a| a.to_string())
+-            .unwrap_or_else(|_| "<unknown address>".to_string());
+-
+-        let len = serialized.len() as u32;
+-        stream
+-            .write(&len.to_be_bytes())
+-            .with_context(|| format!("Error writing length bytes to client {addr}",))?;
+-
+-        stream
+-            .write_all(serialized_u8)
+-            .with_context(|| format!("Error writing message to client {addr}",))?;
+-
+-        stream
+-            .flush()
+-            .with_context(|| format!("Error flushing stream to client {addr}",))?;
+-
+-        Ok(())
+-    }
+-
+-    pub fn receive_message(mut stream: &TcpStream) -> Result<Self> {
+-        let mut len_bytes = [0u8; 4];
+-        stream.read_exact(&mut len_bytes)?;
+-
+-        let len = u32::from_be_bytes(len_bytes) as usize;
+-
+-        let mut buffer = vec![0u8; len];
+-        stream.read_exact(&mut buffer)?;
+-        Self::deserialize_from_bytes(&buffer)
+-    }
+-
+-    fn serialize_file(path: &Path) -> Result<Vec<u8>> {
+-        let mut f = File::open(path)?;
+-        let mut buffer = Vec::new();
+-
+-        f.read_to_end(&mut buffer)?;
+-        Ok(buffer)
+-    }
+-
+-    pub fn save_file_to_disk(path: String, buf: &Vec<u8>) -> Result<()> {
+-        let parent_dir = Path::new(&path)
+-            .parent()
+-            .context("Something went wrong...")?;
+-
+-        if !parent_dir.exists() {
+-            create_dir(parent_dir)?;
+-        }
+-
+-        let mut file = File::create(path)?;
+-        file.write_all(&buf)?;
+-        Ok(())
+-    }
+-}
+diff --git a/src/client.rs b/src/client.rs
+deleted file mode 100644
+index fe59da8..0000000
+--- a/src/client.rs
++++ /dev/null
+@@ -1,83 +0,0 @@
+-use anyhow::{Context, Result};
+-
+-use std::io::{stdout, Write};
+-use std::net::TcpStream;
+-use std::thread;
+-
+-use crate::MessageType;
+-
+-pub fn client(address: &str) -> Result<()> {
+-    let stream = TcpStream::connect(&address).context("Failed to connect")?;
+-
+-    let receiver_stream = stream.try_clone().context("Failed to clone stream")?;
+-    let receiver_thread = thread::Builder::new()
+-        .name(String::from("receiver-thread"))
+-        .spawn(move || {
+-            println!("Listening for incoming messages...");
+-            loop {
+-                match MessageType::receive_message(&receiver_stream) {
+-                    Ok(message) => {
+-                        match message {
+-                            MessageType::Text(text) => {
+-                                println!("\nReceived: {}", text);
+-                            }
+-                            MessageType::Image(_) => {
+-                                println!("\nReceived an image");
+-                            }
+-                            MessageType::File { name, .. } => {
+-                                println!("\nReceived file: {}", name);
+-                            }
+-                        }
+-
+-                        print!("> ");
+-                        stdout().flush().expect("could not flush stdout");
+-                    }
+-                    Err(e) => {
+-                        eprintln!("\nError receiving message: {}", e);
+-                        if e.to_string().contains("end of file") {
+-                            eprintln!("Server connection closed. Exiting...");
+-                            break;
+-                        }
+-                    }
+-                }
+-            }
+-        })?;
+-
+-    let mut sender_stream = stream;
+-    let sender_thread = thread::Builder::new()
+-        .name(String::from("sender-thread"))
+-        .spawn(move || loop {
+-            let mut buf = String::new();
+-            match std::io::stdin().read_line(&mut buf) {
+-                Ok(_) => (),
+-                Err(e) => {
+-                    eprintln!("Invalid input: {e}");
+-                    continue;
+-                }
+-            }
+-
+-            let trimmed = buf.trim().to_string();
+-            if trimmed.is_empty() {
+-                continue;
+-            }
+-
+-            match MessageType::determine_outgoing_message(&trimmed) {
+-                Ok(new_message) => {
+-                    if let Err(e) = new_message
+-                        .send_message(&mut sender_stream)
+-                        .context("Failed to send message to the server")
+-                    {
+-                        eprintln!("Send error: {}", e);
+-                        break;
+-                    }
+-                }
+-                Err(e) => {
+-                    eprintln!("Something went wrong: {e}");
+-                }
+-            }
+-        })?;
+-    sender_thread.join().unwrap();
+-    receiver_thread.join().unwrap();
+-
+-    Ok(())
+-}
+diff --git a/src/main.rs b/src/main.rs
+index efa18e1..b6f3981 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,11 +1,6 @@
+ use anyhow::{Context, Result};
+ use std::io::stdin;
+ 
+-mod chat;
+-mod client;
+-mod server;
+-
+-use chat::MessageType;
+ use client::client;
+ use server::{listen_and_accept, validate_host, validate_port};
+ 
+diff --git a/src/server.rs b/src/server.rs
+deleted file mode 100644
+index 7aa7c96..0000000
+--- a/src/server.rs
++++ /dev/null
+@@ -1,147 +0,0 @@
+-use crate::chat::MessageType;
+-use anyhow::{anyhow, Result};
+-use regex::Regex;
+-
+-use std::collections::HashMap;
+-use std::net::TcpListener;
+-use std::net::{SocketAddr, TcpStream};
+-use std::sync::{Arc, Mutex};
+-use std::thread;
+-use std::time::{SystemTime, UNIX_EPOCH};
+-
+-pub fn validate_port(port: &str) -> Result<String> {
+-    /*
+-    if port.is_empty() {
+-        return "11111".to_string();
+-    }
+-
+-    port.parse::<u16>()
+-        .context("The port is invalid")?;
+-
+-    Ok(port.to_string())
+-    */
+-
+-    let regex = Regex::new(r"[0-9]")?;
+-
+-    if regex.is_match(port) {
+-        Ok(port.to_string())
+-    } else if port.is_empty() {
+-        Ok("11111".to_string())
+-    } else {
+-        Err(anyhow!("The port is invalid..."))
+-    }
+-}
+-
+-pub fn validate_host(host: &str) -> Result<String> {
+-    let regex = Regex::new(
+-        r"^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$",
+-    )?;
+-
+-    if regex.is_match(host) {
+-        Ok(host.to_string())
+-    } else if host == "" {
+-        Ok("127.0.0.1".to_string())
+-    } else {
+-        Err(anyhow!("The host is invalid..."))
+-    }
+-}
+-
+-pub fn listen_and_accept(address: &String) -> Result<()> {
+-    let listener = TcpListener::bind(address)?;
+-    let clients = Arc::new(Mutex::new(HashMap::new()));
+-
+-    for stream in listener.incoming() {
+-        let Ok(stream) = stream else {
+-            continue;
+-        };
+-        let Ok(addr) = stream.peer_addr() else {
+-            continue;
+-        };
+-
+-        println!("New client connected: {}", addr);
+-
+-        let clients_clone = Arc::clone(&clients);
+-
+-        {
+-            let mut clients_map = clients.lock().unwrap();
+-            clients_map.insert(addr, stream.try_clone()?);
+-        }
+-
+-        thread::spawn(move || {
+-            if let Err(e) = handle_client(stream, addr, clients_clone) {
+-                println!("Client error: {}", e);
+-            }
+-        });
+-    }
+-
+-    Ok(())
+-}
+-
+-fn handle_client(
+-    stream: TcpStream,
+-    addr: SocketAddr,
+-    clients: Arc<Mutex<HashMap<SocketAddr, TcpStream>>>,
+-) -> Result<()> {
+-    loop {
+-        match MessageType::receive_message(&stream) {
+-            Ok(message) => {
+-                match &message {
+-                    MessageType::Text(text_content) => {
+-                        println!("{text_content}");
+-                    }
+-                    MessageType::Image(image_data) => {
+-                        println!("Receiving image...");
+-
+-                        let file_name = SystemTime::now()
+-                            .duration_since(UNIX_EPOCH)
+-                            .unwrap()
+-                            .as_secs();
+-                        let path = format!("./images/{file_name}.png");
+-                        MessageType::save_file_to_disk(path, &image_data)?;
+-                    }
+-                    MessageType::File { name, content } => {
+-                        println!("Received file: {}", name);
+-                        let path = format!("./files/{name}");
+-                        MessageType::save_file_to_disk(path, &content)?;
+-                    }
+-                }
+-                broadcast(&clients, &addr, message)?;
+-            }
+-            Err(e) => {
+-                println!("Error receiving message: {}", e);
+-            }
+-        }
+-    }
+-}
+-
+-fn broadcast(
+-    clients: &Arc<Mutex<HashMap<SocketAddr, TcpStream>>>,
+-    sender_addr: &SocketAddr,
+-    msg: MessageType,
+-) -> Result<()> {
+-    let mut to_remove = Vec::new();
+-    let mut clients_map = clients.lock().unwrap();
+-
+-    for (&addr, mut stream) in clients_map.iter_mut() {
+-        if addr == *sender_addr {
+-            continue;
+-        }
+-
+-        match msg.send_message(&mut stream) {
+-            Ok(_) => {
+-                println!("Successfully sent message to client {}", addr);
+-            }
+-            Err(e) => {
+-                println!("Error writing message to client {}: {}", addr, e);
+-                to_remove.push(addr);
+-            }
+-        }
+-    }
+-
+-    for addr in to_remove {
+-        clients_map.remove(&addr);
+-        println!("Removed disconnected client: {}", addr);
+-    }
+-
+-    Ok(())
+-}
