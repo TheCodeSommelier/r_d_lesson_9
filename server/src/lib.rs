@@ -10,6 +10,8 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chat_lib::MessageType;
+mod errors;
+use errors::ServerErrs;
 
 /*
  * Exactly the same number that we can fit into u16 is the number of ports
@@ -79,7 +81,7 @@ pub fn listen_and_accept(address: &String) -> Result<()> {
 
         thread::spawn(move || {
             if let Err(e) = handle_client(stream, addr, clients_clone) {
-                println!("Client error: {}", e);
+                eprintln!("Client error: {}", ServerErrs::ClientConnectionErr(e).red());
             }
         });
     }
@@ -138,7 +140,7 @@ fn handle_client(
                 broadcast(&clients, &addr, message)?;
             }
             Err(e) => {
-                println!("Error receiving message: {}", e.red());
+                eprintln!("{}", ServerErrs::MessageReceivingErr(e).red());
             }
         }
     }
@@ -167,10 +169,9 @@ fn broadcast(
                 println!("Successfully sent message to client {}", addr.green());
             }
             Err(e) => {
-                println!(
-                    "Error writing message to client {}: {}",
-                    addr.red(),
-                    e.red()
+                eprintln!(
+                    "Error writing message to client: {}",
+                    ServerErrs::MessageWritingErr(addr, e).red()
                 );
                 to_remove.push(addr);
             }
