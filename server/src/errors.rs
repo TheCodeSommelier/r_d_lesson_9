@@ -8,7 +8,7 @@ pub enum ServerErrs {
     #[error("Client cannot connect: {0}")]
     ClientConnectionErr(#[source] Error),
 
-    #[error("Error receiving message: {0}")]
+    #[error("\nError receiving message: {0}")]
     MessageReceivingErr(#[source] Error),
 
     #[error("Error writing message to client {0}: {1}")]

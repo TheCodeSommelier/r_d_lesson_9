@@ -39,9 +39,10 @@ pub fn client(address: &str) -> Result<()> {
                         stdout().flush().expect("could not flush stdout");
                     }
                     Err(e) => {
-                        eprintln!("\nError receiving message: {}", e.red());
-                        if e.to_string().contains("end of file") {
-                            eprintln!("{}", ClientErrs::ServerClosedErr(e).red());
+                        let e = e.to_string();
+                        eprintln!("{}", ClientErrs::ServerClosedErr(&e).red());
+                        if e.contains("end of file") {
+                            eprintln!("{}", ClientErrs::ServerClosedErr(&e).red());
                             break;
                         }
                     }

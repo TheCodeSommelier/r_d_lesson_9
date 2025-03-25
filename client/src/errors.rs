@@ -3,9 +3,9 @@ use thiserror::Error;
 use yansi::{Color, Paint};
 
 #[derive(Error, Debug)]
-pub enum ClientErrs {
-    #[error("Server connection closed: {0}")]
-    ServerClosedErr(#[source] Error),
+pub enum ClientErrs<'a> {
+    #[error("\nError receiving message: {0}")]
+    ServerClosedErr(&'a String),
 
     #[error("Invalid input: {0}")]
     InvalidInputErr(#[source] Error),
@@ -17,7 +17,7 @@ pub enum ClientErrs {
     GenericErr(#[source] Error),
 }
 
-impl ClientErrs {
+impl<'a> ClientErrs<'a> {
     pub fn red(&self) -> String {
         Paint::new(self.to_string()).fg(Color::Red).to_string()
     }
