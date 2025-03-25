@@ -6,7 +6,8 @@ use std::net::TcpStream;
 use std::thread;
 
 use chat_lib::MessageType;
-
+mod errors;
+use errors::ClientErrs;
 /*
  * The client function was moved from the main function "if else" statement here
  * It uses TCP streams to connect to the sever and thanks to that is able to receive incoming messages.
@@ -38,9 +39,10 @@ pub fn client(address: &str) -> Result<()> {
                         stdout().flush().expect("could not flush stdout");
                     }
                     Err(e) => {
-                        eprintln!("\nError receiving message: {}", e.red());
-                        if e.to_string().contains("end of file") {
-                            eprintln!("{}", "Server connection closed. Exiting...".red());
+                        let e = e.to_string();
+                        eprintln!("{}", ClientErrs::ServerClosedErr(&e).red());
+                        if e.contains("end of file") {
+                            eprintln!("{}", ClientErrs::ServerClosedErr(&e).red());
                             break;
                         }
                     }
@@ -56,7 +58,7 @@ pub fn client(address: &str) -> Result<()> {
             match std::io::stdin().read_line(&mut buf) {
                 Ok(_) => (),
                 Err(e) => {
-                    eprintln!("Invalid input: {}", e.red());
+                    eprintln!("{}", ClientErrs::InvalidInputErr(e.into()).red());
                     continue;
                 }
             }
@@ -72,12 +74,12 @@ pub fn client(address: &str) -> Result<()> {
                         .send_message(&mut sender_stream)
                         .context("Failed to send message to the server".red())
                     {
-                        eprintln!("Send error: {}", e.red());
+                        eprintln!("{}", ClientErrs::SendErr(e).red());
                         break;
                     }
                 }
                 Err(e) => {
-                    eprintln!("Something went wrong: {}", e.red());
+                    eprintln!("{}", ClientErrs::GenericErr(e).red());
                 }
             }
         })?;

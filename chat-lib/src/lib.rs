@@ -12,6 +12,9 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
 
+mod errors;
+use errors::ChatErrs;
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum MessageType {
     Text(String),
@@ -41,7 +44,7 @@ impl MessageType {
                         content: file_content,
                     })
                 } else {
-                    Err(anyhow!("File path is wrong...".red()))
+                    Err(anyhow!("{}", ChatErrs::FileNotSentErr.red()))
                 }
             }
             _ if msg.starts_with(".image") => {
@@ -72,7 +75,8 @@ impl MessageType {
     }
 
     fn deserialize_from_bytes(input: &Vec<u8>) -> Result<Self> {
-        bincode::deserialize(input).map_err(|e| anyhow!("Deserialization error: {}", e.red()))
+        bincode::deserialize(input)
+            .map_err(|e| anyhow!("{}", ChatErrs::DeserializationErr(e.to_string()).red()))
     }
 
     /*
@@ -89,17 +93,34 @@ impl MessageType {
             .unwrap_or_else(|_| "<unknown address>".to_string());
 
         let len = serialized.len() as u32;
-        stream
-            .write(&len.to_be_bytes())
-            .with_context(|| format!("Error writing length bytes to client {}", addr.red()))?;
+        stream.write(&len.to_be_bytes()).with_context(|| {
+            format!(
+                "{}",
+                ChatErrs::StreamErr(
+                    "Error writing length bytes to client:".to_string(),
+                    &addr.to_string()
+                )
+                .red()
+            )
+        })?;
 
-        stream
-            .write_all(serialized_u8)
-            .with_context(|| format!("Error writing message to client {}", addr.red()))?;
+        stream.write_all(serialized_u8).with_context(|| {
+            format!(
+                "{}",
+                ChatErrs::StreamErr(
+                    "Error writing message to client:".to_string(),
+                    &addr.to_string()
+                )
+                .red()
+            )
+        })?;
 
-        stream
-            .flush()
-            .with_context(|| format!("Error flushing stream to client {}", addr.red()))?;
+        stream.flush().with_context(|| {
+            format!(
+                "{}",
+                ChatErrs::StreamErr("Error flushing stream to client:".to_string(), &addr).red()
+            )
+        })?;
 
         Ok(())
     }
